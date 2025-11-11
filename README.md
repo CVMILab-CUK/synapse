@@ -65,18 +65,13 @@ Pretrian Ecnoder: [LINK](https://drive.google.com/drive/folders/1aQe2bxIijPKFn0f
 
 Ptretrain LDM   : [Multi-Subject](https://drive.google.com/drive/folders/1OiqY7LaendDlVfhme5BECf0LYVVXlieg?usp=drive_link), [Subject-4](https://drive.google.com/drive/folders/178ZbHqGBpZWGOXDtF1hKvmpJq2HB_XoN?usp=drive_link)
 
-<br/><br/>
 
-#### Gen Images
----
-
+### Gen Images
 ```cmd
 python gen_images.py
 ```
-<br/><br/>
 
-#### Test Output
----
+### Test Output
 
 __Run MAKE IS Dataset.ipynb__ : [LINK](./src/Make%20IS%20Dataset.ipynb)
 
@@ -94,10 +89,8 @@ python test_IS.py
 ## From Scratch
 We support only ddp modes now(because of stability of codes)
 
-<br/><br/>
 
 ### Stage1
----
 
 1. set the config, named Train_AE.json[LINK](./src/config/Train_AE.json)
 
@@ -107,7 +100,6 @@ train_ae.py
 ```
 
 ### Stage2
----
 
 1. set the config, named Train_LDM.json [LINK](./src/config/Train_LDM.json)
 
@@ -130,4 +122,4 @@ If you have any questions, please contact dlwpdud@catholic.ac.kr -->
 
 ## Star History
 
-<iframe style="width:100%;height:auto;min-width:600px;min-height:400px;" src="https://www.star-history.com/embed?secret=#CVMILab-CUK/synapse&type=date&legend=top-left" frameBorder="0"></iframe>
+[![Star History Chart](https://api.star-history.com/svg?repos=CVMILab-CUK/synapse&type=date&legend=top-left)](https://www.star-history.com/#CVMILab-CUK/synapse&type=date&legend=top-left)
