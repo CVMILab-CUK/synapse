@@ -13,11 +13,6 @@
 </a>   
 </p> -->
 ![main_model](./assets/main.png)
-<center>
-
-__Fig. main model__
-
-</center>
 SYNAPSE is an efficient two-stage framework for high-fidelity, multi-subject EEG-to-Image synthesis, which uses a pre-trained, CLIP-aligned autoencoder to condition Stable Diffusion via a lightweight adaptation module.
 
 ## Highlights
@@ -30,28 +25,17 @@ SYNAPSE is an efficient two-stage framework for high-fidelity, multi-subject EEG
 - Direct Alignment Framework: Proposes a novel hybrid autoencoder that is pre-trained to directly align EEG signals with the CLIP embedding space , eliminating the need for complex, indirect classification or separate mapping networks  used in prior work.
 
 ## Main Results
+
+### Compare with Others
 ![result1](./assets/Compare_with_other.PNG)
-<center>
-
-__Fig. Compare with Others__
-
-</center>
 
 
+### Semantcial Results
 ![result2](./assets/Semantical%20Example.PNG)
-<center>
-
-__Fig. Semantcial Results__
-
-</center>
-
-
-
-
 
 Baseline Code : [LINK](https://github.com/bbaaii/DreamDiffusion)
 
-
+<br/><br/>
 
 ## Run SYNAPSE Framework
 
@@ -68,29 +52,40 @@ pip install -r requirements.txt
 ```
 
 ### Get Started
+---
 
 1. Dataset Download [LINK](https://github.com/perceivelab/eeg_visual_classification)
 2. And Run preprocessing.ipynb files : [LINK](./src/preprocessing.ipynb)
 
 
 ### Pretrained Models
+---
+
 Pretrian Ecnoder: [LINK](https://drive.google.com/drive/folders/1aQe2bxIijPKFn0fYnp-TnmjTVZCfi_T-?usp=drive_link)
+
 Ptretrain LDM   : [Multi-Subject](https://drive.google.com/drive/folders/1OiqY7LaendDlVfhme5BECf0LYVVXlieg?usp=drive_link), [Subject-4](https://drive.google.com/drive/folders/178ZbHqGBpZWGOXDtF1hKvmpJq2HB_XoN?usp=drive_link)
 
-### Gen Images
+<br/><br/>
+
+#### Gen Images
+---
+
 ```cmd
 python gen_images.py
 ```
+<br/><br/>
 
-### Test Output
-1. Run MAKE IS Dataset.ipynb : [LINK](./src/Make%20IS%20Dataset.ipynb)
+#### Test Output
+---
 
-2. Run test_images.py
+__Run MAKE IS Dataset.ipynb__ : [LINK](./src/Make%20IS%20Dataset.ipynb)
+
+__Run test_images.py__
 ```cmd
 python test_images.py
 ```
 
-3. Run test_IS.py
+__Run test_IS.py__
 ```cmd
 python test_IS.py
 ```
@@ -99,7 +94,11 @@ python test_IS.py
 ## From Scratch
 We support only ddp modes now(because of stability of codes)
 
+<br/><br/>
+
 ### Stage1
+---
+
 1. set the config, named Train_AE.json[LINK](./src/config/Train_AE.json)
 
 2. run from scratch
@@ -108,8 +107,9 @@ train_ae.py
 ```
 
 ### Stage2
-1. set the config, named Train_LDM.json [LINK](./src/config/Train_LDM.json)
+---
 
+1. set the config, named Train_LDM.json [LINK](./src/config/Train_LDM.json)
 
 2. run from scratch
 ```python
@@ -129,4 +129,5 @@ If you have any questions, please contact dlwpdud@catholic.ac.kr -->
 ## Acknowledgement
 
 ## Star History
+
 <iframe style="width:100%;height:auto;min-width:600px;min-height:400px;" src="https://www.star-history.com/embed?secret=#CVMILab-CUK/synapse&type=date&legend=top-left" frameBorder="0"></iframe>
