@@ -8,6 +8,13 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="timm.models.la
 import argparse
 import torch, os
 import torch.nn as nn
+# Avoid "/dev/shm" segment exhaustion in DataLoader workers (512^2 image batches):
+# share tensors via the file system instead of shared-memory segments.
+import torch.multiprocessing as _mp
+try:
+    _mp.set_sharing_strategy('file_system')
+except Exception:
+    pass
 
 # from trainer.eeg_ldm2_trainer import EEGLDM2Trainer as trainer
 

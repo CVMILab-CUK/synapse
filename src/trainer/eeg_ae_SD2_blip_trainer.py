@@ -25,7 +25,16 @@ class EEGAETrainer(BaseTrainer):
                          sharedFilePath, self.json_dict["num_workers"])
 
 
-        self.clip = ImageClip()
+        # Optional: use precomputed per-image CLIP/BLIP2 embeddings (huge speedup at scale;
+        # avoids running BLIP2 every step and frees ~11GB VRAM for larger batches).
+        self.embed_cache = None
+        cache_path = self.json_dict.get("cached_embed_path", None)
+        if cache_path:
+            print(f"Loading cached CLIP/BLIP2 embeds: {cache_path}")
+            self.embed_cache = torch.load(cache_path, map_location="cpu")
+            self.clip = None
+        else:
+            self.clip = ImageClip()
 
         self.json_parser()
         self.__checkDirectory__()
@@ -76,6 +85,14 @@ class EEGAETrainer(BaseTrainer):
         self.sim_lambda     = self.json_dict["sim_lambda"]
         self.img_size       = self.json_dict["img_size"]
         self.global_attn    = bool(self.json_dict["global_attn"])
+        # Contrastive-style augmentation (applied to encoder INPUT only; recon target stays the
+        # clean signal -> denoising regularizer) + learnable InfoNCE temperature.
+        self.augment        = bool(self.json_dict.get("augment", 0))
+        self.aug_noise      = self.json_dict.get("aug_noise", 0.0)
+        self.aug_scale      = self.json_dict.get("aug_scale", 0.0)
+        self.aug_chan_drop  = self.json_dict.get("aug_chan_drop", 0.0)
+        self.aug_time_mask  = self.json_dict.get("aug_time_mask", 0)
+        self.learnable_temp = bool(self.json_dict.get("learnable_temp", 0))
 
 
         ########################################
@@ -87,12 +104,15 @@ class EEGAETrainer(BaseTrainer):
         self.validIter = self.json_dict["validIter"]
         self.logIter   = self.json_dict["logIter"]
         self.restart   = self.json_dict["restart"]
-    
+        # Optional: feed `real_channels` physical electrodes, learned-expanded to `in_channels`
+        # internally (avoids zero-pad attention sinks). None => classic (in_channels == physical).
+        self.real_channels = self.json_dict.get("real_channels", None)
+
     def model_define(self, gpu):
         self.MODEL = eeg_AutoEncoder(self.in_seq,  self.in_channels, self.z_channels, self.out_seq,    
                                     self.dims, self.shortcut, self.dropout, self.groups, self.layer_mode, 
                                     self.block_mode, self.down_mode, self.up_mode, self.pos_mode, self.skip_mode, 
-                                    self.n_layer, self.n_head, self.dff_factor, self.stride, global_attn= self.global_attn).to(gpu)
+                                    self.n_layer, self.n_head, self.dff_factor, self.stride, global_attn= self.global_attn, real_channels=self.real_channels).to(gpu)
         
         self.optim = torch.optim.AdamW(filter(lambda x: x.requires_grad, self.MODEL.parameters()), lr= self.lr, betas=[0.9, 0.999])
         self.sdsc_loss = SignalDiceLoss(False).to(gpu)
@@ -104,13 +124,44 @@ class EEGAETrainer(BaseTrainer):
         elif self.sim_mode == "cos":
             self.sim  = nn.CosineSimilarity()
         elif self.sim_mode == "con":
-            self.sim  = ContrastiveLoss()
+            # keep the exact known-good path (CPU sim) unless learnable temperature is requested
+            self.sim  = ContrastiveLoss().to(gpu) if self.learnable_temp else ContrastiveLoss()
         else:
             raise AssertionError(f"sim_mode only l2, con or cos, now : {self.sim_mode}")
+        # Learnable temperature: the InfoNCE logit_scale is a separate module, so it is NOT in
+        # MODEL.parameters(); add it explicitly when enabled (else it stays fixed at exp(2.6592)).
+        if self.learnable_temp and self.sim_mode == "con":
+            self.optim.add_param_group({"params": self.sim.parameters(), "lr": self.lr})
         
         
 
         
+    def _get_embeds(self, names, image, ori_img, gpu):
+        # Cached path: look up precomputed CLIP-text / CLIP-image embeds by image name.
+        if self.embed_cache is not None:
+            text_embed  = torch.stack([self.embed_cache[n]["text"]  for n in names]).to(gpu).float()
+            image_embed = torch.stack([self.embed_cache[n]["image"] for n in names]).to(gpu).float()
+            return text_embed, image_embed
+        return self.clip(image, ori_img)
+
+    def _augment(self, x):
+        # x: [B, T=in_seq, C=channels]. Vectorized contrastive-style augmentation on the encoder
+        # input only. Reconstruction is computed against the clean signal (denoising).
+        B, T, C = x.shape
+        if self.aug_noise > 0:
+            x = x + torch.randn_like(x) * self.aug_noise
+        if self.aug_scale > 0:
+            x = x * (1.0 + torch.randn(B, 1, 1, device=x.device) * self.aug_scale)
+        if self.aug_chan_drop > 0:                       # zero a random subset of electrodes
+            x = x * (torch.rand(B, 1, C, device=x.device) > self.aug_chan_drop).float()
+        if self.aug_time_mask > 0:                       # zero a random contiguous time window
+            w = int(self.aug_time_mask)
+            starts = torch.randint(0, max(1, T - w), (B,), device=x.device)
+            idx = torch.arange(T, device=x.device)[None, :]
+            keep = ~((idx >= starts[:, None]) & (idx < starts[:, None] + w))
+            x = x * keep[:, :, None].float()
+        return x
+
     def _train(self, gpu, size):
         print(f"Now Initialize Rank: {gpu} | Number Of GPU : {size}")
         self.model_define(gpu)        
@@ -119,9 +170,17 @@ class EEGAETrainer(BaseTrainer):
 
         self.MODEL = nn.SyncBatchNorm.convert_sync_batchnorm(DDP(self.MODEL, find_unused_parameters=False))
         # self.clip  = nn.SyncBatchNorm.convert_sync_batchnorm(DDP(ImageClip('ViT-L/14').to(gpu), find_unused_parameters=True))
-        self.clip.model.to(gpu)
-        self.clip.blip_model.to(gpu)
-        self.makeDatasets(self.eeg_train_path, self.eeg_test_path, self.eeg_val_path, self.img_path, self.img_size)
+        if self.clip is not None:
+            self.clip.model.to(gpu)
+            self.clip.blip_model.to(gpu)
+        # When using cached embeds, prefer the in-RAM consolidated dataset (ram_<split>.pt
+        # next to preprocessing_data) if present — removes per-sample torch.load at big batch.
+        ram_root = None
+        if self.embed_cache is not None:
+            cand = os.path.dirname(os.path.dirname(self.eeg_train_path))
+            if os.path.exists(os.path.join(cand, "ram_train.pt")):
+                ram_root = cand
+        self.makeDatasets(self.eeg_train_path, self.eeg_test_path, self.eeg_val_path, self.img_path, self.img_size, load_images=(self.embed_cache is None), ram_root=ram_root)
 
         if gpu == 0:
             self.makeTensorBoard()
@@ -152,20 +211,26 @@ class EEGAETrainer(BaseTrainer):
                 image = image.to(gpu)
                 b, c, s = eeg.size()
 
-                
+                eeg_in = self._augment(eeg) if self.augment else eeg
                 with torch.autocast(device_type="cuda"):
-                    latent, rec = self.MODEL(eeg)
+                    latent, rec = self.MODEL(eeg_in)
                     latent      = latent.permute(0, 2, 1)
-                    text_embed, image_embed =  self.clip(image, ori_img)
+                    text_embed, image_embed = self._get_embeds(data['name'], image, ori_img, gpu)
                     # Feature Alignment
-                    sim_loss    = self.sim(latent.mean(1), image_embed) + self.eps
-                    cos_loss    = (1 - self.cos_loss(latent, text_embed)).mean()
-                    align_loss  =  self.mse(latent, text_embed)
-                    
+                    # CLIP-style token split: token0 -> image contrastive (free, discriminative);
+                    # tokens 1:77 (76) -> text MSE/cosine (SD cross-attn compatible). Decoupling
+                    # stops text-MSE from collapsing the contrastive token.
+                    sim_loss    = self.sim(latent[:, 0, :], image_embed) + self.eps
+                    cos_loss    = (1 - self.cos_loss(latent[:, 1:, :], text_embed[:, 1:, :])).mean()
+                    align_loss  =  self.mse(latent[:, 1:, :], text_embed[:, 1:, :])
+
                     # Reconstrution loss
                     rec_loss    = self.mse(rec, eeg)
                     sdsc_loss   = self.sdsc_loss(rec, eeg).mean()
-                    loss        = self.awl(sdsc_loss, sim_loss, cos_loss, rec_loss, align_loss)
+                    # Explicit weights (NOT awl): awl down-weights the contrastive term as it
+                    # plateaus, suppressing it. Diagnostic showed token0 InfoNCE learns strongly
+                    # (top-1 ~0.18) when given real gradient -> make sim prominent via sim_lambda.
+                    loss        = self.sdsc_lambda * sdsc_loss + self.sim_lambda * sim_loss + cos_loss + rec_loss + align_loss
                     # loss        =   self.sdsc_lambda * sdsc_loss + self.sim_lambda * sim_loss + cos_loss  + rec_loss + align_loss
 
                     mse         = self.mse(rec, eeg)
@@ -227,11 +292,11 @@ class EEGAETrainer(BaseTrainer):
             with torch.autocast(device_type="cuda"):
                 latent, rec = self.MODEL(eeg)
                 latent      = latent.permute(0, 2, 1)
-                text_embed, image_embed =  self.clip(image, ori_img)
+                text_embed, image_embed = self._get_embeds(data['name'], image, ori_img, gpu)
                 # Feature Alignment
-                sim_loss    = self.sim(latent.mean(1), image_embed) + self.eps
-                cos_loss    = (1 - self.cos_loss(latent, text_embed)).mean()
-                align_loss  =  self.mse(latent, text_embed)
+                sim_loss    = self.sim(latent[:, 0, :], image_embed) + self.eps
+                cos_loss    = (1 - self.cos_loss(latent[:, 1:, :], text_embed[:, 1:, :])).mean()
+                align_loss  =  self.mse(latent[:, 1:, :], text_embed[:, 1:, :])
                 
                 # Reconstrution loss
                 rec_loss    = self.mse(rec, eeg)
@@ -288,7 +353,7 @@ class EEGAETrainer(BaseTrainer):
         self.MODEL = eeg_AutoEncoder(self.in_seq,  self.in_channels, self.z_channels, self.out_seq,    
                                     self.dims, self.shortcut, self.dropout, self.groups, self.layer_mode, 
                                     self.block_mode, self.down_mode, self.up_mode, self.pos_mode, self.skip_mode, 
-                                    self.n_layer, self.n_head, self.dff_factor, self.stride, global_attn= self.global_attn).cuda()
+                                    self.n_layer, self.n_head, self.dff_factor, self.stride, global_attn= self.global_attn, real_channels=self.real_channels).cuda()
         self.sdsc_loss = SignalDiceLoss(False).cuda()
 
         dict_model = torch.load(os.path.join(self.ckpt_dir, folder_name, f"{self.name}_{self.restart}.pth"))

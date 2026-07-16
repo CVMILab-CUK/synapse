@@ -1,0 +1,9 @@
+.omc
+ckpt_dir
+log
+output
+pretrain_models
+tools
+sharedfile
+__pycache__
+REPORT.md

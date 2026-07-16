@@ -25,7 +25,8 @@ class EEGPrepDataset:
 
     # Constructor
     @timechecker
-    def __init__(self, eeg_pre_path, eeg_data_path, transforms=None, img_size=512):
+    def __init__(self, eeg_pre_path, eeg_data_path, transforms=None, img_size=512, load_images=True):
+        self.load_images = load_images
         # Load EEG signals
         print("Start Load...")
         # loaded = torch.load(eeg_signals_path)
@@ -65,6 +66,11 @@ class EEGPrepDataset:
 
         # Get Original Image
         image_name = loaded["image"]
+        # When alignment embeddings are precomputed/cached, images aren't needed at all;
+        # skip decode to avoid huge shared-memory pressure (and speed up) at large batch.
+        if not self.load_images:
+            ph = torch.zeros(3, 8, 8)
+            return {"eeg":eeg, "image":ph, "label":label, "ori_img":ph, 'name':image_name}
         s, _ = image_name.split("_")
         image_raw = cv2.imread(os.path.join(self.image_path, s, image_name+".JPEG"))
         image = cv2.cvtColor(image_raw, cv2.COLOR_BGR2RGB)/255.
@@ -81,7 +87,7 @@ class EEGPrepDataset:
         # image_raw['pixel_values'] = image_raw['pixel_values'].squeeze(0)
         
         # Return
-        return {"eeg":eeg, "image":image, "label":label,"ori_img":ori_img, 'name':""}# "image_raw":image}
+        return {"eeg":eeg, "image":image, "label":label,"ori_img":ori_img, 'name':image_name}# "image_raw":image}
 
 class EEGPreDataset:
 
@@ -140,8 +146,34 @@ class EEGPreDataset:
         # Return
         return eeg, image, label
 
+class EEGRamDataset:
+    """In-RAM EEG dataset for the cached-embedding (no-image) training path.
+
+    Loads a single consolidated tensor file (built by datalibs/build_ram_cache.py)
+    so every batch is pure memory indexing — eliminates per-sample torch.load /
+    disk I/O, which is the bottleneck at large batch sizes (e.g. 2048).
+    Images are not loaded (alignment targets come from the precomputed embed cache).
+    """
+    @timechecker
+    def __init__(self, ram_cache_path, transforms=None, img_size=224, **_):
+        print(f"[EEGRamDataset] loading {ram_cache_path}")
+        blob = torch.load(ram_cache_path, weights_only=False)
+        self.eeg = blob["eeg"]            # float32 tensor (N, T, C)
+        self.names = blob["names"]        # list[str]
+        self.labels = blob["labels"]      # tensor (N,)
+        self.dataset_size = self.eeg.shape[0]
+
+    def __len__(self):
+        return self.dataset_size
+
+    def __getitem__(self, i):
+        ph = torch.zeros(3, 8, 8)
+        return {"eeg": self.eeg[i], "image": ph, "label": int(self.labels[i]),
+                "ori_img": ph, "name": self.names[i]}
+
+
 class EEGDataset:
-    
+
     # Constructor
     @timechecker
     def __init__(self, eeg_signals_path, eeg_data_path, split_path, split_num=0, split_name="train", transforms=None):

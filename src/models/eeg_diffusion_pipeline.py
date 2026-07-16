@@ -208,6 +208,7 @@ class EEGDiffusionPipeline(DiffusionPipeline, StableDiffusionMixin):
         timesteps: List[int] = None,
         guidance_scale: float = 7.5,
         num_images_per_prompt: Optional[int] = 1,
+        ip_image_embed: Optional[torch.Tensor] = None,   # (B,1024) override IP-Adapter input (retrieval-augmented)
         eta: float = 0.0,
         generator: Optional[torch.Generator] = None,
         sigmas: List[float] = None,
@@ -253,8 +254,14 @@ class EEGDiffusionPipeline(DiffusionPipeline, StableDiffusionMixin):
 
 
         if self.ip_adaption_modules is not None:
-            eeg_adaption_embeddings = eeg_embeddings.mean(dim=1)
-            eeg_adaption_embeddings = self.ip_adaption_modules(eeg_adaption_embeddings)
+            if ip_image_embed is not None:
+                # retrieval-augmented: use a (retrieved real) CLIP-image embed as the IP prompt.
+                base = ip_image_embed.to(eeg_embeddings.device, eeg_embeddings.dtype)
+                base = base.repeat_interleave(num_images_per_prompt, dim=0)
+                base = torch.cat([torch.zeros_like(base), base])          # uncond + cond
+            else:
+                base = eeg_embeddings[:, 0, :]                            # token0 (matches training; was mean bug)
+            eeg_adaption_embeddings = self.ip_adaption_modules(base)
             eeg_embeddings          = torch.cat([eeg_embeddings, eeg_adaption_embeddings], dim=1)
             # eeg_embeddings = self.ip_adaption_modules(eeg_embeddings)
 
