@@ -31,7 +31,8 @@ class eeg_encoder(nn.Module):
                 dff_factor:int          = 2,
                 stride:int              = 4,
                 skip_mode: str          = "conv",
-                global_attn:bool        = False
+                global_attn:bool        = False,
+                real_channels:int       = None
                 )->None:
         super().__init__()
         assert layer_mode in ['conv', 'linear'], f"Layer Mode Can be  Conv or Linaer Now : {layer_mode}"
@@ -40,6 +41,13 @@ class eeg_encoder(nn.Module):
         assert pos_mode in ['sinusoidal', 'trunc'], f"Layer Mode Can be  Conv or Linaer Now : {pos_mode}"
         assert skip_mode in  ['conv', 'down', None], f"Skip Mode Can be conv or donw Now : {skip_mode}"
         self.global_attn = global_attn
+        # Learned electrode expansion: feed the `real_channels` physical electrodes and lift them
+        # to `in_channels` internal channels with a single Linear (last-axis = electrode axis),
+        # instead of zero-padding. Zero padding creates attention "sinks" (real electrodes waste
+        # attention on the all-zero pad channels); a learned mixing removes that failure mode while
+        # keeping the original 128-channel downsampling schedule unchanged.
+        self.real_channels = real_channels
+        self.elec_expand = nn.Linear(real_channels, in_channels) if (real_channels is not None and real_channels != in_channels) else None
         # Set Block's
         if block_mode == "res":
             block = partial(ResnetBlock, shortcut=shortcut, dropout=dropout, groups=groups,layer_mode=layer_mode)
@@ -145,6 +153,8 @@ class eeg_encoder(nn.Module):
         h = x
 
         # print("inputs : ",h.shape)
+        if self.elec_expand is not None:      # [B, in_seq, real_channels] -> [B, in_seq, in_channels]
+            h = self.elec_expand(h)
         h = self.in_layer(h)
         skip_h = []
         # print(f"After In Layer : {h.shape}")
@@ -199,7 +209,8 @@ class eeg_decoder(nn.Module):
                 n_head:int              = 64,
                 dff_factor:int          = 2,
                 stride:int              = 4,
-                skip_mode:str           = "conv"
+                skip_mode:str           = "conv",
+                real_channels:int       = None
             ):
         super().__init__()
         assert layer_mode in ['conv', 'linear'], f"Layer Mode Can be  Conv or Linaer Now : {layer_mode}"
@@ -245,7 +256,12 @@ class eeg_decoder(nn.Module):
             self.in_layer = Conv1dLayer(in_channels=in_seq, out_channels=dims[-1], kernel_size=1, bias=True)
             self.out_layer = Conv1dLayer(in_channels=dims[0], out_channels=out_seq, kernel_size=1, bias=True)   
 
-        self.skip_mode = skip_mode  
+        self.skip_mode = skip_mode
+        # Mirror of the encoder's electrode expansion: project the reconstructed `out_channels`
+        # internal channels back down to the `real_channels` physical electrodes (Linear on the
+        # last/electrode axis). Reconstruction loss is then computed on the real electrodes only.
+        self.real_channels = real_channels
+        self.elec_contract = nn.Linear(out_channels, real_channels) if (real_channels is not None and real_channels != out_channels) else None
         # self.posEmbed = nn.ModuleList(self.posEmbed)
 
 
@@ -336,6 +352,8 @@ class eeg_decoder(nn.Module):
             h = up(h)
             # print(f"BLOCK {idx} after up block : {h.shape}")
         h = self.out_layer(h)
+        if self.elec_contract is not None:    # [B, out_seq, out_channels] -> [B, out_seq, real_channels]
+            h = self.elec_contract(h)
         # print(f"After Out Layer : {h.shape}")
         return h
 
@@ -360,22 +378,23 @@ class eeg_AutoEncoder(nn.Module):
                 n_head:int              = 64,
                 dff_factor:int          = 2,
                 stride:int              = 4,
-                global_attn:bool        = False
+                global_attn:bool        = False,
+                real_channels:int       = None
                 ):
         super().__init__()
         self.skip_mode = skip_mode
-        
+
         self.Encoder = eeg_encoder( in_seq = in_seq, in_channels = in_channels, out_channels=z_channels,out_seq = out_seq,
                 dims = dims, shortcut = shortcut, dropout = dropout, groups = groups,
                 layer_mode = layer_mode,  block_mode = block_mode, down_mode = down_mode,
                 pos_mode = pos_mode, n_layer =n_layer, n_head = n_head, dff_factor= dff_factor,
-                stride = stride, skip_mode= skip_mode, global_attn=global_attn)
-        
+                stride = stride, skip_mode= skip_mode, global_attn=global_attn, real_channels=real_channels)
+
         self.Decoder = eeg_decoder(in_seq = out_seq,in_channels=z_channels, out_channels = in_channels, out_seq = in_seq,
                 dims = dims, shortcut = shortcut, dropout = dropout, groups = groups,
                 layer_mode = layer_mode,  block_mode = block_mode, up_mode = up_mode,
                 pos_mode = pos_mode, n_layer =n_layer, n_head = n_head, dff_factor= dff_factor,
-                stride = stride, skip_mode= skip_mode)
+                stride = stride, skip_mode= skip_mode, real_channels=real_channels)
         
 
     def forward(self, x, skips=False):

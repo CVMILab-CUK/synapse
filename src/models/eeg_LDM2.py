@@ -145,7 +145,8 @@ class cond_stage_model2(nn.Module):
                  n_head:int              = 64,
                  dff_factor:int          = 2,
                  stride:int              = 4,
-                 global_attn:bool        = False):
+                 global_attn:bool        = False,
+                 real_channels:int       = None):
         super().__init__()
         assert os.path.exists(pre_path) or pre_path is None, f"Check your ckpt path"
         # prepare pretrained AE 
@@ -164,9 +165,10 @@ class cond_stage_model2(nn.Module):
                         n_layer =n_layer, 
                         n_head = n_head,
                         dff_factor= dff_factor,
-                        stride = stride, 
+                        stride = stride,
                         skip_mode= skip_mode,
-                        global_attn=global_attn)
+                        global_attn=global_attn,
+                        real_channels=real_channels)
         if pre_path:
             state_dict = torch.load(pre_path)
             m, u = self.model.load_state_dict(state_dict["net"], strict=False)
@@ -216,6 +218,7 @@ class eLDM2:
                  dff_factor:int          = 2,
                  stride:int              = 4,
                  global_attn:bool        = True,
+                 real_channels:int       = None,
 
                  # Diffusers Settings
                  gradient_accumulation_steps:int = 1,
@@ -224,7 +227,9 @@ class eLDM2:
                  use_ema:bool                    = False,
                  foreach_ema:bool                = True,
                 #  model_id                        = "stabilityai/stable-diffusion-2-1-base",
-                 model_id                        = "stabilityai/stable-diffusion-2-1",
+                 # The official stabilityai/stable-diffusion-2-1 repo is now gated; allow
+                 # overriding via SD21_MODEL_ID env var (e.g. a non-gated faithful mirror).
+                 model_id                        = os.environ.get("SD21_MODEL_ID", "stabilityai/stable-diffusion-2-1"),
                  output_dir                      = "./ckpt_dir",
                  logging_dir                     = "./log",
                  revision:str                    = None,
@@ -282,10 +287,11 @@ class eLDM2:
                 model_id, subfolder="vae", revision=revision, variant=variant,
             )
 
-        self.cond_models = cond_stage_model2(pre_path, in_seq, in_channels, out_channels, out_seq, 
+        self.cond_models = cond_stage_model2(pre_path, in_seq, in_channels, out_channels, out_seq,
                                                   dims, shortcut, dropout, groups,layer_mode,
-                                                  block_mode, down_mode, pos_mode, skip_mode, 
-                                                  n_layer, n_head, dff_factor, stride, global_attn=global_attn)#.to(dtype=torch.float16) # Chnage for my EEG Models
+                                                  block_mode, down_mode, pos_mode, skip_mode,
+                                                  n_layer, n_head, dff_factor, stride, global_attn=global_attn,
+                                                  real_channels=real_channels)#.to(dtype=torch.float16) # Chnage for my EEG Models
 
         self.unet = UNet2DConditionModel.from_pretrained(
             model_id, subfolder="unet", revision=non_ema_revision,

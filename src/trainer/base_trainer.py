@@ -12,7 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 
 
-from datalibs import EEGPrepDataset
+from datalibs import EEGPrepDataset, EEGRamDataset
 from datalibs.compose import *
 
 class BaseTrainer():
@@ -51,7 +51,7 @@ class BaseTrainer():
         dist.init_process_group(backend='nccl', init_method='file://'+self.sharedFilePath+'/sharedfile', rank=gpu, world_size=size)
         # raise ValueError
     
-    def makeDatasets(self, eeg_train_path, eeg_test_path, eeg_val_path, img_path, img_size, mean=None, std=None, min_value=0, max_value = 1, ddp=True):
+    def makeDatasets(self, eeg_train_path, eeg_test_path, eeg_val_path, img_path, img_size, mean=None, std=None, min_value=0, max_value = 1, ddp=True, load_images=True, ram_root=None):
         self.trasnform_train = transforms.Compose([
             Resize((img_size,img_size)),
             Normalization(mean, std) if mean is not None and std is not None else Normalization(),
@@ -67,9 +67,15 @@ class BaseTrainer():
             Normalization(mean, std) if mean is not None and std is not None else Normalization(),
             Scaling(min_value, max_value)
         ])
-        self.train_dataset = EEGPrepDataset(eeg_pre_path = eeg_train_path,  eeg_data_path = img_path, transforms=self.trasnform_train, img_size = img_size)
-        self.valid_dataset = EEGPrepDataset(eeg_pre_path = eeg_val_path,  eeg_data_path = img_path, transforms=self.trasnform_valid, img_size = img_size)
-        self.test_dataset  = EEGPrepDataset(eeg_pre_path = eeg_test_path,  eeg_data_path = img_path, transforms=self.trasnform_test, img_size = img_size)
+        if ram_root is not None:
+            # Fast in-RAM path (cached embeddings, no images): one consolidated load per split.
+            self.train_dataset = EEGRamDataset(os.path.join(ram_root, "ram_train.pt"))
+            self.valid_dataset = EEGRamDataset(os.path.join(ram_root, "ram_test.pt"))
+            self.test_dataset  = EEGRamDataset(os.path.join(ram_root, "ram_test.pt"))
+        else:
+            self.train_dataset = EEGPrepDataset(eeg_pre_path = eeg_train_path,  eeg_data_path = img_path, transforms=self.trasnform_train, img_size = img_size, load_images=load_images)
+            self.valid_dataset = EEGPrepDataset(eeg_pre_path = eeg_val_path,  eeg_data_path = img_path, transforms=self.trasnform_valid, img_size = img_size, load_images=load_images)
+            self.test_dataset  = EEGPrepDataset(eeg_pre_path = eeg_test_path,  eeg_data_path = img_path, transforms=self.trasnform_test, img_size = img_size, load_images=load_images)
 
         if ddp:
             self.train_dataset_sampler = DistributedSampler(self.train_dataset, drop_last=True)

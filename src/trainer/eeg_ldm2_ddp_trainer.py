@@ -108,6 +108,7 @@ class EEGLDM2Trainer(BaseTrainer):
         ########################################
         self.in_seq         = self.json_dict["in_seq"]
         self.in_channels    = self.json_dict["in_channels"]
+        self.real_channels  = self.json_dict.get("real_channels", None)  # learned electrode expand (no zero-pad sink)
         self.z_channels     = self.json_dict["z_channels"]
         self.out_seq        = self.json_dict["out_seq"]
         self.dims           = self.json_dict["dims"]
@@ -168,7 +169,8 @@ class EEGLDM2Trainer(BaseTrainer):
                           down_mode = self.down_mode, pos_mode = self.pos_mode, skip_mode = self.skip_mode, learning_rate=self.lr,
                           n_layer = self.n_layer, n_head = self.n_head, dff_factor = self.dff_factor, use_ema=self.use_ema,
                           stride =  self.stride, epochs=self.epochs, gradient_accumulation_steps=self.gradient_accumulation_step, 
-                          training_mode=self.training_mode, ip_adapter_enabled=self.ip_adapter_enabled, ip_adapter_token_num=self.ip_adapter_token_num, cfg_scale = self.cfg_scale)
+                          training_mode=self.training_mode, ip_adapter_enabled=self.ip_adapter_enabled, ip_adapter_token_num=self.ip_adapter_token_num, cfg_scale = self.cfg_scale,
+                          real_channels=self.real_channels)
 
         
         
@@ -272,6 +274,12 @@ class EEGLDM2Trainer(BaseTrainer):
                 self.model.unet, self.model.optimizer, self.loader_train, self.model.lr_scheduler
             )
 
+        # Resume (continue training) from a saved accelerator state when restart is set.
+        if self.restart:
+            resume_dir = os.path.join(self.ckpt_dir, self.name, f"checkpoint-{self.restart}")
+            print(f"Resuming Stage2 from {resume_dir}", flush=True)
+            self.model.accelerator.load_state(resume_dir)
+
         # Define Log Dir
         self.model.accelerator.init_trackers(f"{self.name}_project")
 
@@ -351,7 +359,7 @@ class EEGLDM2Trainer(BaseTrainer):
                             raise ValueError(f"Unknown prediction type {self.model.noise_scheduler.config.prediction_type}")
 
                         if self.ip_adapter_enabled:
-                            eeg_adaptor_vector   = eeg_condition_vector.mean(dim=1)
+                            eeg_adaptor_vector   = eeg_condition_vector[:, 0, :]  # token0 = image-contrastive "image-prompt" for IP-Adapter
                             eeg_adaptor_vector   = self.model.ip_adaption_modules(eeg_adaptor_vector)
                             eeg_condition_vector = torch.cat([eeg_condition_vector, eeg_adaptor_vector], dim=1)
                             # print(eeg_condition_vector.shape)
@@ -513,8 +521,8 @@ class EEGLDM2Trainer(BaseTrainer):
         #                                      self.model.accelerator.unwrap_model(self.model.cond_models),
                                             self.model.vae,
                                             self.model.cond_models,
-                                            self.model.accelerator.unwrap_model(self.model.unet), 
-                                            self.model.accelerator.unwrap_model(self.model.noise_scheduler),
+                                            self.model.accelerator.unwrap_model(self.model.unet),
+                                            self.model.noise_scheduler,  # scheduler is not an nn.Module; don't unwrap (newer accelerate rejects it)
                                             self.model.accelerator.unwrap_model(self.model.ip_adaption_modules),
                                             )
 
@@ -544,6 +552,7 @@ class EEGLDM2Trainer(BaseTrainer):
             grid_image = 255. * rearrange(grid_image, 'c h w -> h w c').cpu().numpy()
 
             #Actual Log Part
+            print(f"[VALID-GEN] step {global_step} | GA(top_k) {np.mean(top_k).item():.4f} | LPIPS {np.mean(psm).item():.4f}", flush=True)
             self.model.accelerator.log({"valid/top_k": np.mean(top_k).item()}, step=global_step)
             self.model.accelerator.log({"valid/psm":  np.mean(psm).item()}, step=global_step)
             self.model.accelerator.trackers[0].writer.add_images("valid/img", 
